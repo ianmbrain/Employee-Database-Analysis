@@ -1,0 +1,219 @@
+---
+title: "Employee Database R Analysis "
+author: "Ian Brain"
+date: "8/1/2022"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, out.width = 400, options(scipen = 999))
+#scipen = 999 prevents the side by side plots from returning the axises in scientific notation
+```
+## Introduction
+This R analysis comprises the Employee database utilized in the Employee SQL project and the Employee ER Diagram. This analysis uses a selection of queries from the Employee SQL project. This project differs in that it utilizes R to connect to the database and run queries. The project also uses R to create different visualizations.
+
+## Preparing the Project and Database
+This project uses the tidyverse, GGally, and RMySQL package.
+```{r}
+library(tidyverse)
+library(GGally)
+library(RMySQL)
+```
+
+To begin, R connects to the Employee database that has a host = localhost, port = 3306, username = root, and password = sqlpassword. This MySQL database is stored on a MySQL server on my computer.
+```{r}
+mysqlemployee = dbConnect(RMySQL::MySQL(),
+                            dbname='Employee',
+                            host='localhost',
+                            port=3306,
+                            user='root',
+                            password='sqlpassword')
+```
+
+A list of the tables in the the database are returned using dbListTables(). A list of the attributes in the employees table are then returned using dbListFields.
+```{r}
+dbListTables(mysqlemployee)
+dbListFields(mysqlemployee, 'employees')
+```
+
+## Query Analysis
+First, a query is executed to return the first name, last, name, and current title of each employee. Only the first five results are returned.
+```{r}
+employeequery = dbSendQuery(mysqlemployee, 
+                     "select e.first_name AS first_name, e.last_name AS last_name, t.title AS title
+                     from employees e
+                     JOIN titles t
+                        ON e.emp_no = t.emp_no
+                     WHERE YEAR(t.to_date) = 9999")
+eq.frame = fetch(employeequery, n=5)
+print(eq.frame)
+dbClearResult(employeequery)
+```
+
+A query is then executed to fetch the average salary every year.
+```{r}
+yearlysalary = dbSendQuery(mysqlemployee, 
+"
+SELECT YEAR(from_date) AS 'year', AVG(salary) AS avg_salary
+FROM salaries
+GROUP BY YEAR(from_date)
+ORDER BY YEAR(from_date)")
+ys.frame = fetch(yearlysalary)
+print(ys.frame[1:10, ])
+dbClearResult(yearlysalary)
+```
+
+A line plot is created for this query to visualize the result.
+```{r}
+ggplot(ys.frame, aes(x = year, y = avg_salary)) + 
+  geom_line() + 
+  geom_point() +
+  labs(x = "Year", y = "Average Salary") + 
+  ggtitle("Average Salary vs Year") + 
+  theme_bw()
+```
+
+Similarly, a query is executed to return the yearly average salary for each department. This query uses a CTE that returns the employee number, department, salary, and the respective year. This is then queried from to find the average salary each year, grouped by each department.
+```{r}
+departmentsalary = dbSendQuery(mysqlemployee, 
+"
+WITH dept_sal AS (
+	SELECT e.emp_no, e.dept_no, s.salary, YEAR(s.to_date) AS year_end
+	FROM salaries s
+	JOIN dept_emp e 
+		ON s.emp_no = e.emp_no)
+SELECT dept_name, year_end, avg_sal
+FROM (
+  SELECT dept_no, year_end, AVG(salary) AS avg_sal
+  FROM dept_sal
+  GROUP BY dept_no, year_end
+  HAVING year_end > 1985
+  ORDER BY dept_no, year_end) a
+JOIN departments d
+  ON a.dept_no = d.dept_no")
+ds.frame = fetch(departmentsalary)
+ds.frame$year_end <- replace(ds.frame$year_end, ds.frame$year_end == 9999, 2003)
+print(ds.frame[1:10, ])
+dbClearResult(departmentsalary)
+```
+
+A line plot is created that contains each departments average salary every year.
+```{r}
+ggplot(ds.frame, aes(x = year_end, y = avg_sal, group = dept_name)) + 
+  geom_line(aes(color = dept_name)) +
+  geom_point(aes(color = dept_name)) + 
+  labs(x = "Year", y = "Average Salary") + 
+  ggtitle("Yearly Average Salary of Each Department") + 
+  theme_bw()
+```
+Next, a query is executed to return each salary in the current year along with the corresponding department name of the salary.
+```{r}
+currentsalaries = dbSendQuery(mysqlemployee, 
+"
+WITH department_names AS(
+  SELECT emp_no, dept_name
+  FROM dept_emp e
+  JOIN departments d
+    ON e.dept_no = d.dept_no),
+emp_title AS (
+  SELECT d.emp_no, dept_name, title
+  FROM department_names d
+  JOIN titles t
+    ON t.emp_no = d.emp_no)
+SELECT dept_name, salary, title
+FROM salaries s
+JOIN emp_title t
+  ON s.emp_no = t.emp_no
+WHERE YEAR(s.to_date) = 9999")
+cs.frame = fetch(currentsalaries)
+print(cs.frame[1:10, ])
+dbClearResult(currentsalaries)
+```
+
+Numeric summaries are returned for the each department of the salary data using the group_by() function. The numeric summaries consist of the mean in addition to a 5 number summary.
+```{r}
+cs.frame %>% 
+  group_by(dept_name) %>%
+  summarize(minimum = min(salary, na.rm =TRUE), 
+            Q1 = quantile(salary, probs = .25, na.rm = TRUE), 
+            mean = mean(salary, na.rm =TRUE), 
+            median = median(salary, na.rm =TRUE), 
+            Q3 = quantile(salary, probs = .75, na.rm = TRUE), 
+            maximum = max(salary, na.rm =TRUE))
+```
+
+These 5 number summaries are then visualized using side by side box plots created for the values of salary that correspond with each department. The factor() function is used as department is a categorical variable.
+```{r}
+ggplot(cs.frame, aes(x = factor(dept_name), y = salary)) + 
+  geom_boxplot() + 
+  theme(axis.text.x=element_text(angle = 320, vjust = 0.5)) +
+  labs(x = "Department", y = "Salary") + 
+  ggtitle("Salary grouped by Department")
+```
+
+Similarly, side by side box plots created for the values of salary that correspond with each employee title. The factor() function is used as title is a categorical variable.
+```{r}
+ggplot(cs.frame, aes(x = factor(title), y = salary)) + 
+  geom_boxplot() + 
+  theme(axis.text.x=element_text(angle = 320, vjust = 0.5)) +
+  labs(x = "Title", y = "Salary") + 
+  ggtitle("Salary grouped by Title")
+```
+
+Finally, a query is executed to return the number of employees each department. This query is performed using a CTE that returns the employee number, manager number, current date, and department. The number of employees in each department are then counted by grouping by department.
+```{r}
+dept_num_emp = dbSendQuery(mysqlemployee, 
+"
+WITH man_emp AS (
+	SELECT DISTINCT e.emp_no AS emp_no, m.emp_no AS mngr_no, m.to_date AS cur_date, e.dept_no AS dept_no
+	FROM dept_emp e 
+	LEFT JOIN dept_manager m
+		ON e.dept_no = m.dept_no
+	WHERE m.to_date IN (SELECT MAX(to_date) FROM dept_manager GROUP BY dept_no)
+	ORDER BY dept_no)
+SELECT mngr_no, dept_name, num_emp
+FROM (
+  SELECT mngr_no, dept_no, COUNT(emp_no) AS num_emp
+  FROM man_emp
+  GROUP BY mngr_no, dept_no
+  ORDER BY num_emp DESC) a
+JOIN departments d
+  ON a.dept_no = d.dept_no")
+dne.frame = fetch(dept_num_emp)
+print(dne.frame[1:10, ])
+dbClearResult(departmentsalary)
+```
+
+A bar chart is created to visualize the number of employees per department.
+```{r}
+ggplot(dne.frame, aes(x = fct_rev(fct_reorder(dept_name, num_emp)), y = num_emp)) + geom_col(fill = "blue") + 
+  labs(x = "Department", y = "Number of Employees") + 
+  ggtitle("Employees per Department") +
+  theme(axis.text.x=element_text(angle = 320, vjust = 0.5))
+```
+
+A pie chart is also created to visualize the number of employees per department.
+```{r}
+pie(dne.frame$num_emp, dne.frame$dept_name, col = topo.colors(length(dne.frame$dept_name)))
+```
+
+
+R is then disconnected from the Employee database.
+```{r}
+dbDisconnect(mysqlemployee)
+```
+
+## Sources
+Resources used to understand dbplyr and RMySQL syntax:
+
+https://www.projectpro.io/recipes/connect-mysql-r
+
+https://www.linkedin.com/pulse/rmysql-tutorial-beginners-rambaksh-prajapati/
+
+Employee database: https://relational.fit.cvut.cz/dataset/Employee 
+
+
+
+
